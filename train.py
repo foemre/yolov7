@@ -34,14 +34,34 @@ from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
+from utils.augsched import AugScheduler
 
 logger = logging.getLogger(__name__)
 
 
 def train(hyp, opt, device, tb_writer=None):
-    logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
+        
+    logger.info(colorstr('max hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
     save_dir, epochs, batch_size, total_batch_size, weights, rank, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank, opt.freeze
+
+    # Augmentation scheduler
+    if opt.augmode:
+        print("Augmentation mode: %s" % opt.augmode)
+        augkeys = ['degrees', 
+                   'translate', 
+                   'scale', 
+                   'shear', 
+                   'perspective', 
+                   'flipud', 
+                   'fliplr', 
+                   'mosaic', 
+                   'hsv_h', 
+                   'hsv_s', 
+                   'hsv_v', 
+                   'mixup', 
+                   'paste_in']
+        augsched = AugScheduler(hyps=hyp, mode=opt.augmode, max_epochs=epochs, aug_keys=augkeys)
 
     # Directories
     wdir = save_dir / 'weights'
@@ -305,6 +325,9 @@ def train(hyp, opt, device, tb_writer=None):
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
+        if opt.augmode:
+            hyp = augsched.update(epoch)  # update hyperparameters (only on first rank)
+            print(colorstr('hyperparameters: %s' % ', '.join('%s=%.3g' % x for x in hyp.items())))
         model.train()
 
         # Update image weights (optional)
@@ -562,6 +585,7 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--augmode', type=str, default='cosine', help='augmentation mode: cosine, sine, full_cosine, full_sine')
     opt = parser.parse_args()
 
     # Set DDP variables
